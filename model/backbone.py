@@ -95,25 +95,25 @@ class ConvNeXtBlock(nn.Module):
 # ConvNeXt Frontend (1/8)
 # =========================
 
-# Input: 640 x 480
+# Input: 480 x 640 x 3
 class ConvNeXtFrontend(nn.Module):
     def __init__(self):
         super().__init__()
-        self.stem = Stem(3, 96) # 320x240
+        self.stem = Stem(3, 96) # 240 x 320
 
         self.stage1 = nn.ModuleList()
 
         for _ in range(3):
             self.stage1.append(ConvNeXtBlock(96))
 
-        self.downsample1 = DownSampling(96) #160x120
+        self.downsample1 = DownSampling(96) #120 x 160
 
         self.stage2 = nn.ModuleList()
 
         for _ in range(3):
             self.stage2.append(ConvNeXtBlock(192))
         
-        self.downsample2 = DownSampling(192) # 80x60
+        self.downsample2 = DownSampling(192) # 60 x 80
 
         self.conv = nn.Conv2d(384, 192, kernel_size=1, stride=1)
 
@@ -133,4 +133,4 @@ device = torch.device("cpu")
 
 model = ConvNeXtFrontend().to(device)
 
-summary(model, input_size=(16, 3, 640, 480))
+summary(model, input_size=(16, 3, 480, 640))
