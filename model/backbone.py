@@ -114,7 +114,8 @@ class ConvNeXtFrontend(nn.Module):
             self.stage2.append(ConvNeXtBlock(192))
         
         self.downsample2 = DownSampling(192) # 80x60
-    
+
+        self.conv = nn.Conv2d(384, 192, kernel_size=1, stride=1)
 
     def forward(self, x):
         x = self.stem(x)
@@ -124,6 +125,7 @@ class ConvNeXtFrontend(nn.Module):
         for block in self.stage2:
             x = block(x)
         x = self.downsample2(x)
+        x = self.conv(x)
         return x  
 
 
@@ -131,4 +133,4 @@ device = torch.device("cpu")
 
 model = ConvNeXtFrontend().to(device)
 
-summary(model, input_size=(16, 3, 320, 640))
+summary(model, input_size=(16, 3, 640, 480))
