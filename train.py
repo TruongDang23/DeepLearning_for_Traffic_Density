@@ -120,8 +120,6 @@ def train(train_list, model, criterion, optimizer, epoch):
     
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
-        print(target.shape)
-        sys.exit(1)
         
         loss = criterion(output, target)
         
