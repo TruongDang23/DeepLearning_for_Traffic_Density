@@ -13,7 +13,7 @@ class DilatedBranch(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(dim, dim//2, 3, padding=2, dilation=2), #96 channels
             nn.ReLU(inplace=True),
-            nn.Conv2d(dim, dim//2, 3, padding=2, dilation=2), #48 channels
+            nn.Conv2d(dim//2, dim//4, 3, padding=2, dilation=2), #48 channels
             nn.ReLU(inplace=True),
         )
 

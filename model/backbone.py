@@ -127,10 +127,3 @@ class ConvNeXtFrontend(nn.Module):
         x = self.downsample2(x)
         x = self.conv(x)
         return x  
-
-
-device = torch.device("cpu")
-
-model = ConvNeXtFrontend().to(device)
-
-summary(model, input_size=(16, 3, 480, 640))
