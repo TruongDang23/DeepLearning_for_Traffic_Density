@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+import torch.nn.functional as F
+from pytorch_msssim import ssim, ms_ssim
 
 import dataset
 from utils import save_checkpoint
@@ -88,8 +90,11 @@ def adjust_learning_rate(optimizer, epoch):
     for param_group in optimizer.param_groups:
         param_group['lr'] = args.lr
 
-def train(train_list, model, criterion, optimizer, epoch):
+def train(train_list, model, optimizer, epoch):
     losses = AverageMeter()
+    mse_meter = AverageMeter()
+    ssim_meter = AverageMeter()
+    psnr_meter = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
     
@@ -113,7 +118,7 @@ def train(train_list, model, criterion, optimizer, epoch):
     
     for i,(img, target)in enumerate(train_loader):
         data_time.update(time.time() - end)
-        
+
         img = img.to(device)
         img = Variable(img)
         output = model(img)
@@ -121,9 +126,13 @@ def train(train_list, model, criterion, optimizer, epoch):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
         
-        loss = criterion(output, target)
+        loss, mse, ssim_l, psnr = density_loss(output, target, alpha=0.1)
         
         losses.update(loss.item(), img.size(0))
+        mse_meter.update(mse.item(), img.size(0))
+        ssim_meter.update(ssim_l.item(), img.size(0))
+        psnr_meter.update(psnr.item(), img.size(0))
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()    
@@ -133,15 +142,23 @@ def train(train_list, model, criterion, optimizer, epoch):
         
         if i % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  #'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  #'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
+                  'SSIM_LOSS {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
+                  'PSNR {psnr.val:.4f} ({psnr.avg:.4f})\t'
                   .format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses))
+                   epoch, i, len(train_loader), 
+                   #batch_time=batch_time,
+                   #data_time=data_time, 
+                   loss=losses, 
+                   mse=mse_meter, 
+                   ssim_l=ssim_meter, 
+                   psnr=psnr_meter))
     
-def validate(val_list, model, criterion):
-    print ('begin test')
+def validate(val_list, model):
+    print ('Begin test')
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
                    shuffle=False,
@@ -154,18 +171,54 @@ def validate(val_list, model, criterion):
     model.eval()
     
     mae = 0
+    pnsr_avg = 0
+    ssim_avg = 0
     
     for i,(img, target) in enumerate(test_loader):
-        img = img.to(device )
+        img = img.to(device)
         img = Variable(img)
         output = model(img)
         
+        # MAE
         mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
-    mae = mae/len(test_loader)    
-    print(' * MAE {mae:.3f} '
-              .format(mae=mae))
+
+        # Avoid out-of-range
+        #pred = torch.clamp(pred, 0, 1)
+
+        # SSIM (hoặc MS-SSIM)
+        ssim_val += ms_ssim(output, target, data_range=1.0)
+
+        # PSNR
+        psnr_val += psnr(output, target)
+
+    mae = mae/len(test_loader)
+    pnsr_avg = psnr_val/len(test_loader)
+    ssim_avg = ssim_val/len(test_loader)
+
+    print(' * MAE {mae:.3f} | SSIM {ssim_avg:.3f} | PNSR {pnsr_avg:.3f}'
+              .format(mae=mae, ssim_avg=ssim_avg, pnsr_avg=pnsr_avg))
 
     return mae 
+
+def psnr(pred, target, max_val=1.0):
+    mse = F.mse_loss(pred, target) + 1e-8
+    return 10 * torch.log10(max_val**2 / mse)
+
+def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+    # MSE (count + pixel)
+    mse = F.mse_loss(pred, target)
+    pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
+
+    # SSIM or MS-SSIM
+    if use_ms: #Recommended
+        ssim_val = ms_ssim(pred, target, data_range=1.0)
+    else:
+        ssim_val = ssim(pred, target, data_range=1.0)
+
+    ssim_loss = 1 - ssim_val
+
+    total = mse + alpha * ssim_loss
+    return total, mse, ssim_loss, pnsr
 
 def main():
     global args, best_predict
@@ -197,7 +250,6 @@ def main():
     model = CrowdModel().to(device)
 
     # Criterion and optimizer
-    criterion = nn.MSELoss(size_average=False).to(device)
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.decay)
@@ -206,14 +258,15 @@ def main():
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
 
-        train(train_list, model, criterion, optimizer, epoch)
-        current_predict = validate(val_list, model, criterion)
+        train(train_list, model, optimizer, epoch)
+        current_predict = validate(val_list, model)
 
         is_best = current_predict < best_predict
         best_predict = min(current_predict, best_predict)
 
         print(' * best MAE {mae:.3f} '
               .format(mae=best_predict))
+        
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.pre,

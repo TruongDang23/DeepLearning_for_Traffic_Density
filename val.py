@@ -11,6 +11,8 @@ import datetime
 import PIL.Image as Image
 from matplotlib import cm as CM
 from tqdm import tqdm
+from pytorch_msssim import ssim, ms_ssim
+import torch.nn.functional as F
 
 import torch
 import torch.nn as nn
@@ -24,8 +26,7 @@ from utils import save_checkpoint
 from build_model import CrowdModel
 
 # Global variables
-#CHECKPOINT = 'checkpoints/may_04_dl_density_best_model.pth.tar'
-CHECKPOINT = "may03model_best.pth.tar"
+CHECKPOINT = 'checkpoints/may_04_dl_density_best_model.pth.tar'
 VIZ = True
 BATCH_SIZE = 1
 SUBSET = 100
@@ -62,6 +63,10 @@ def get_image_set(path_set: str):
         sys.exit(1)
     return img_paths, count
 
+def psnr(pred, target, max_val=1.0):
+    mse = F.mse_loss(pred, target) + 1e-8
+    return 10 * torch.log10(max_val**2 / mse)
+
 def validate(val_list, model):
     print ('Begin test')
     test_loader = torch.utils.data.DataLoader(
@@ -71,18 +76,33 @@ def validate(val_list, model):
                        transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                                 std=[0.229, 0.224, 0.225]),
                    ]),  train=False),
-    batch_size=BATCH_SIZE)    
+    batch_size=1)    
     
     model.eval()
     
     mae = 0
-
-    for i, (img, target) in enumerate(tqdm(test_loader)):
+    pnsr_avg = 0
+    ssim_avg = 0
+    
+    for i,(img, target) in enumerate(test_loader):
         img = img.to(device)
         img = Variable(img)
         output = model(img)
+        predict_num = output.data.sum()
+        target_num = target.sum()
         
+        # MAE
         mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
+
+        # Avoid out-of-range
+        #pred = torch.clamp(pred, 0, 1)
+
+        # SSIM (hoặc MS-SSIM)
+        ssim_val += ms_ssim(output, target, data_range=1.0)
+
+        # PSNR
+        psnr_val += psnr(output, target)
+
         if VIZ is True:
             ori_img = Image.open(val_list[i])
             # Print test image
@@ -90,11 +110,24 @@ def validate(val_list, model):
             plt.figure(figsize=(8, 8))
             plt.imshow(ori_img)
             plt.imshow(output.detach().cpu().numpy().squeeze(0).squeeze(0), cmap=CM.jet, alpha=0.6)  # overlay
+            plt.text(10, 80, f'GT  : {int(target_num)}', color='red', fontsize=12)
+            plt.text(10, 110, f'PRED: {int(predict_num)}', color='red', fontsize=12)
             plt.axis('off')
 
             # Save
             img_name = os.path.basename(val_list[i])
-            plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_density.jpg'), bbox_inches='tight', pad_inches=0)
+            plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_overlay.jpg'), bbox_inches='tight', pad_inches=0)
+            plt.close()
+
+            # Plot density only
+            plt.figure(figsize=(8, 8))
+            plt.imshow(output.detach().cpu().numpy().squeeze(0).squeeze(0), cmap=CM.jet) 
+            plt.text(10, 80, f'GT  : {int(target_num)}', color='red', fontsize=12)
+            plt.text(10, 110, f'PRED: {int(predict_num)}', color='red', fontsize=12)
+            plt.axis('off')
+
+            # Save
+            plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_density_heat.jpg'), bbox_inches='tight', pad_inches=0)
             plt.close()
 
     mae = mae/len(test_loader)    
@@ -108,6 +141,9 @@ model = CrowdModel().to(device)
 
 # Load checkpoint
 checkpoint = torch.load(CHECKPOINT)
+
+# Load state dict
+model.load_state_dict(checkpoint['state_dict'])
 
 # Get test set
 test_set_path = os.path.join(dataset_path, test_set)
