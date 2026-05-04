@@ -93,10 +93,11 @@ class CrowdModel(nn.Module):
         swin_out = swin_out.view(swin_out.size(0), swin_out.size(1), H // 8, W // 8)
 
         fused = torch.cat([conv_out, swin_out], dim=1)
-
         fused = self.fuse(fused)
-
+        
         out = self.decoder(fused)
+        out = F.softplus(out)
+
         return out
 
 

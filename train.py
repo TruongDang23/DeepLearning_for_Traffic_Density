@@ -6,6 +6,7 @@ import argparse
 import json
 import cv2
 import time
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -19,7 +20,8 @@ from utils import save_checkpoint
 from build_model import CrowdModel
 
 # Global variables
-dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+dataset_path = "/mnt/d/00_master_of_science/linux_workspace/common/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -31,7 +33,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 parser = argparse.ArgumentParser(description='PyTorch Traffic Crowd Estimation Net')
 parser.add_argument('--pre', '-p', metavar='PRETRAINED', default=None, type=str,
                     help='path to the pretrained model')
-parser.add_argument('--task', '-t', metavar='TASK', type=str, default="may03",
+parser.add_argument('--task', '-t', metavar='TASK', type=str, default="may05",
                     help='task id to use.')
 
 # Measuerment
@@ -171,10 +173,8 @@ def validate(val_list, model):
     model.eval()
     
     mae = 0
-    pnsr_avg = 0
-    ssim_avg = 0
     
-    for i,(img, target) in enumerate(test_loader):
+    for i, (img, target) in enumerate(tqdm(test_loader)):
         img = img.to(device)
         img = Variable(img)
         output = model(img)
@@ -182,21 +182,10 @@ def validate(val_list, model):
         # MAE
         mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
 
-        # Avoid out-of-range
-        #pred = torch.clamp(pred, 0, 1)
-
-        # SSIM (hoặc MS-SSIM)
-        ssim_val += ms_ssim(output, target, data_range=1.0)
-
-        # PSNR
-        psnr_val += psnr(output, target)
-
     mae = mae/len(test_loader)
-    pnsr_avg = psnr_val/len(test_loader)
-    ssim_avg = ssim_val/len(test_loader)
 
-    print(' * MAE {mae:.3f} | SSIM {ssim_avg:.3f} | PNSR {pnsr_avg:.3f}'
-              .format(mae=mae, ssim_avg=ssim_avg, pnsr_avg=pnsr_avg))
+    print(' * MAE {mae:.3f}'
+              .format(mae=mae))
 
     return mae 
 
@@ -234,7 +223,7 @@ def main():
     args.epochs = 400
     args.steps         = [-1,1,100,150]
     args.scales        = [1,1,1,1]
-    args.workers = 4
+    args.workers = 1
     args.seed = time.time()
     args.print_freq = 30
 

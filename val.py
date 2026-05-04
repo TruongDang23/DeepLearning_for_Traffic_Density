@@ -26,7 +26,10 @@ from utils import save_checkpoint
 from build_model import CrowdModel
 
 # Global variables
-CHECKPOINT = 'checkpoints/may_04_dl_density_best_model.pth.tar'
+#CHECKPOINT = 'checkpoints/may_04_dl_density_best_model.pth.tar'
+#CHECKPOINT = "may03model_best.pth.tar"
+#CHECKPOINT = "backup_may_04/may03checkpoint.pth.tar"
+CHECKPOINT = "may05checkpoint.pth.tar"
 VIZ = True
 BATCH_SIZE = 1
 SUBSET = 100
@@ -44,6 +47,24 @@ density_map_set = "density_gt"
 # Get device
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = 'cpu'
+
+# Measuerment
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count 
 
 def get_image_set(path_set: str):
     img_paths = []
@@ -69,6 +90,9 @@ def psnr(pred, target, max_val=1.0):
 
 def validate(val_list, model):
     print ('Begin test')
+    ssim_meter = AverageMeter()
+    psnr_meter = AverageMeter()
+
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
                    shuffle=False,
@@ -76,32 +100,31 @@ def validate(val_list, model):
                        transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                                 std=[0.229, 0.224, 0.225]),
                    ]),  train=False),
-    batch_size=1)    
+    batch_size=BATCH_SIZE)    
     
     model.eval()
     
     mae = 0
-    pnsr_avg = 0
-    ssim_avg = 0
     
-    for i,(img, target) in enumerate(test_loader):
+    for i, (img, target) in enumerate(tqdm(test_loader)):
         img = img.to(device)
         img = Variable(img)
         output = model(img)
+
         predict_num = output.data.sum()
         target_num = target.sum()
-        
+
+        target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
+        target = Variable(target)
+
         # MAE
         mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
 
-        # Avoid out-of-range
-        #pred = torch.clamp(pred, 0, 1)
-
-        # SSIM (hoặc MS-SSIM)
-        ssim_val += ms_ssim(output, target, data_range=1.0)
-
-        # PSNR
-        psnr_val += psnr(output, target)
+        # SSIM + PSNR
+        ssim_val = ms_ssim(output, target, data_range=1.0)
+        ssim_meter.update(ssim_val.item(), img.size(0))
+        psnr_val = psnr(output, target)
+        psnr_meter.update(psnr_val.item(), img.size(0))
 
         if VIZ is True:
             ori_img = Image.open(val_list[i])
@@ -131,8 +154,11 @@ def validate(val_list, model):
             plt.close()
 
     mae = mae/len(test_loader)    
-    print(' * MAE {mae:.3f} '
-              .format(mae=mae))
+
+    print(' * MAE {mae:.3f} | \
+            SSIM_LOSS {ssim_l.avg:.4f} | \
+            PSNR {psnr.avg:.4f}'
+            .format(mae=mae, ssim_l=ssim_meter, psnr=psnr_meter))
 
     return mae 
 
