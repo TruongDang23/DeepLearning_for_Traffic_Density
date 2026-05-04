@@ -37,3 +37,9 @@ python data_preprocess.py
 ## 2. Train
 - Open the script `train.py` and change path to your TRANCOS dataset by updating `dataset_path` variable.
 - Using command: `python train.py`
+
+## 3. Validation
+- Open the script `val.py` and change path to your TRANCOS dataset by updating `dataset_path` variable.
+- Set the model checkpoint to `CHECKPOINT` macro.
+- If you want to output the density overlay image, set `VIZ=True` inside `val.py`.
+- Using command: `python val.py`
