@@ -55,6 +55,7 @@ class Decoder(nn.Module):
         self.conv2 = nn.Conv2d(128, 64, 3, padding=1)
         self.conv3 = nn.Conv2d(64, 32, 3, padding=1)
         self.out = nn.Conv2d(32, 1, 1)
+        
 
     def forward(self, x):
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
@@ -76,8 +77,14 @@ class CrowdModel(nn.Module):
         self.conv_branch = DilatedBranch() # Input H: 60, W: 80, C: 192; Output H: 60, W: 80, C: 48
         self.swin_branch = swin_block # Input H: 60, W: 80, C: 192; Output H: 60, W: 80, C: 192
 
-        self.fuse = nn.Conv2d(240, 192, 1) #in_C: 240, out_C: 192
-        self.decoder = Decoder()
+        #self.fuse = nn.Conv2d(240, 192, 1) #in_C: 240, out_C: 192
+        #self.decoder = Decoder()
+        self.head = nn.Sequential(
+                        nn.Conv2d(240, 64, 3, padding=1),
+                        nn.ReLU(),
+                        nn.Conv2d(64, 1, 1)
+                    )
+        self.act = nn.ReLU(inplace=True)
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -93,10 +100,12 @@ class CrowdModel(nn.Module):
         swin_out = swin_out.view(swin_out.size(0), swin_out.size(1), H // 8, W // 8)
 
         fused = torch.cat([conv_out, swin_out], dim=1)
-        fused = self.fuse(fused)
-        
-        out = self.decoder(fused)
-        out = F.softplus(out)
+
+        #fused = self.fuse(fused)
+        #out = self.decoder(fused)
+
+        out = self.head(fused)
+        out = self.act(out)
 
         return out
 

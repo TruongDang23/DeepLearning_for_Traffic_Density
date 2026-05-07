@@ -19,6 +19,7 @@ import dataset
 from utils import save_checkpoint
 from build_model import CrowdModel
 
+
 # Global variables
 #dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
 dataset_path = "/mnt/d/00_master_of_science/linux_workspace/common/datasets/TRANCOS_v3"
@@ -95,7 +96,7 @@ def adjust_learning_rate(optimizer, epoch):
 def train(train_list, model, optimizer, epoch):
     losses = AverageMeter()
     mse_meter = AverageMeter()
-    ssim_meter = AverageMeter()
+    mae_meter = AverageMeter()
     psnr_meter = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -104,8 +105,9 @@ def train(train_list, model, optimizer, epoch):
         dataset.listDataset(train_list,
                        shuffle=True,
                        transform=transforms.Compose([
-                       transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                                std=[0.229, 0.224, 0.225]),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                        std=[0.229, 0.224, 0.225]),
                    ]), 
                        train=True, 
                        #seen=model.seen,
@@ -128,11 +130,11 @@ def train(train_list, model, optimizer, epoch):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
         
-        loss, mse, ssim_l, psnr = density_loss(output, target, alpha=0.1)
+        loss, mse, mae, psnr = density_loss(output, target, alpha=0.001)
         
         losses.update(loss.item(), img.size(0))
         mse_meter.update(mse.item(), img.size(0))
-        ssim_meter.update(ssim_l.item(), img.size(0))
+        mae_meter.update(mae.item(), img.size(0))
         psnr_meter.update(psnr.item(), img.size(0))
 
         optimizer.zero_grad()
@@ -148,7 +150,7 @@ def train(train_list, model, optimizer, epoch):
                   #'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
-                  'SSIM_LOSS {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
+                  'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
                   'PSNR {psnr.val:.4f} ({psnr.avg:.4f})\t'
                   .format(
                    epoch, i, len(train_loader), 
@@ -156,7 +158,7 @@ def train(train_list, model, optimizer, epoch):
                    #data_time=data_time, 
                    loss=losses, 
                    mse=mse_meter, 
-                   ssim_l=ssim_meter, 
+                   mae=mae_meter, 
                    psnr=psnr_meter))
     
 def validate(val_list, model):
@@ -193,29 +195,31 @@ def psnr(pred, target, max_val=1.0):
     mse = F.mse_loss(pred, target) + 1e-8
     return 10 * torch.log10(max_val**2 / mse)
 
-def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+def density_loss(pred, target, alpha=0.001, use_ms=True, max_val=1.0):
     # MSE (count + pixel)
     mse = F.mse_loss(pred, target)
     pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
 
     # SSIM or MS-SSIM
-    if use_ms: #Recommended
-        ssim_val = ms_ssim(pred, target, data_range=1.0)
-    else:
-        ssim_val = ssim(pred, target, data_range=1.0)
+    # if use_ms: #Recommended
+    #     ssim_val = ms_ssim(pred, target, data_range=1.0)
+    # else:
+    #     ssim_val = ssim(pred, target, data_range=1.0)
 
-    ssim_loss = 1 - ssim_val
+    # ssim_loss = 1 - ssim_val
 
-    total = mse + alpha * ssim_loss
-    return total, mse, ssim_loss, pnsr
+    #total = mse + alpha * ssim_loss
+    mae = abs(pred.sum() - target.sum())
+    total = mse + alpha * abs(pred.sum() - target.sum())
+    return total, mse, mae, pnsr
 
 def main():
     global args, best_predict
     best_predict = 1e6
 
     args = parser.parse_args()
-    args.original_lr = 1e-7
-    args.lr = 1e-7
+    args.original_lr = 1e-6
+    args.lr = 1e-6
     args.batch_size    = 1
     args.momentum      = 0.95
     args.decay         = 5*1e-4
@@ -243,6 +247,19 @@ def main():
                                 momentum=args.momentum,
                                 weight_decay=args.decay)
     
+    if args.pre:
+        if os.path.isfile(args.pre):
+            print("=> loading checkpoint '{}'".format(args.pre))
+            checkpoint = torch.load(args.pre)
+            args.start_epoch = checkpoint['epoch']
+            best_prec1 = checkpoint['best_prec1']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.pre, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.pre))
+
     # Loading epoch and train
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
