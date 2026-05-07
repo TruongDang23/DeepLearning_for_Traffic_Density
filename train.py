@@ -6,18 +6,24 @@ import argparse
 import json
 import cv2
 import time
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+import torch.nn.functional as F
+from pytorch_msssim import ssim, ms_ssim
+from torchmetrics import StructuralSimilarityIndexMeasure
 
 import dataset
 from utils import save_checkpoint
 from build_model import CrowdModel
 
+
 # Global variables
-dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+dataset_path = "/mnt/d/00_master_of_science/linux_workspace/common/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -29,7 +35,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 parser = argparse.ArgumentParser(description='PyTorch Traffic Crowd Estimation Net')
 parser.add_argument('--pre', '-p', metavar='PRETRAINED', default=None, type=str,
                     help='path to the pretrained model')
-parser.add_argument('--task', '-t', metavar='TASK', type=str, default="may03",
+parser.add_argument('--task', '-t', metavar='TASK', type=str, default="may05",
                     help='task id to use.')
 
 # Measuerment
@@ -88,8 +94,12 @@ def adjust_learning_rate(optimizer, epoch):
     for param_group in optimizer.param_groups:
         param_group['lr'] = args.lr
 
-def train(train_list, model, criterion, optimizer, epoch):
+def train(train_list, model, optimizer, epoch):
     losses = AverageMeter()
+    mse_meter = AverageMeter()
+    mae_meter = AverageMeter()
+    ssim_meter = AverageMeter()
+    grid_meter = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
     
@@ -97,8 +107,9 @@ def train(train_list, model, criterion, optimizer, epoch):
         dataset.listDataset(train_list,
                        shuffle=True,
                        transform=transforms.Compose([
-                       transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                                std=[0.229, 0.224, 0.225]),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                        std=[0.229, 0.224, 0.225]),
                    ]), 
                        train=True, 
                        #seen=model.seen,
@@ -113,7 +124,7 @@ def train(train_list, model, criterion, optimizer, epoch):
     
     for i,(img, target)in enumerate(train_loader):
         data_time.update(time.time() - end)
-        
+
         img = img.to(device)
         img = Variable(img)
         output = model(img)
@@ -121,9 +132,14 @@ def train(train_list, model, criterion, optimizer, epoch):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
         
-        loss = criterion(output, target)
+        loss, mse, mae, ssim_l, grid_loss = density_loss(output, target, alpha=0.001)
         
         losses.update(loss.item(), img.size(0))
+        mse_meter.update(mse.item(), img.size(0))
+        mae_meter.update(mae.item(), img.size(0))
+        ssim_meter.update(ssim_l.item(), img.size(0))
+        grid_meter.update(grid_loss.item(), img.size(0))
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()    
@@ -133,15 +149,25 @@ def train(train_list, model, criterion, optimizer, epoch):
         
         if i % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  #'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  #'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
+                  'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
+                  'SSIM_L {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
+                  'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
                   .format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses))
+                   epoch, i, len(train_loader), 
+                   #batch_time=batch_time,
+                   #data_time=data_time, 
+                   loss=losses, 
+                   mse=mse_meter, 
+                   mae=mae_meter, 
+                   ssim_l=ssim_meter,
+                   grid_loss = grid_meter))
     
-def validate(val_list, model, criterion):
-    print ('begin test')
+def validate(val_list, model):
+    print ('Begin test')
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
                    shuffle=False,
@@ -155,25 +181,75 @@ def validate(val_list, model, criterion):
     
     mae = 0
     
-    for i,(img, target) in enumerate(test_loader):
-        img = img.to(device )
+    for i, (img, target) in enumerate(tqdm(test_loader)):
+        img = img.to(device)
         img = Variable(img)
         output = model(img)
         
+        # MAE
         mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
-    mae = mae/len(test_loader)    
-    print(' * MAE {mae:.3f} '
+
+    mae = mae/len(test_loader)
+
+    print(' * MAE {mae:.3f}'
               .format(mae=mae))
 
     return mae 
+
+def psnr(pred, target, max_val=1.0):
+    mse = F.mse_loss(pred, target) + 1e-8
+    return 10 * torch.log10(max_val**2 / mse)
+
+def regional_loss(pred, gt, level=1):
+
+    B, C, H, W = pred.shape
+    gt = gt.type(torch.FloatTensor).unsqueeze(0).to(device)
+
+    grid = 2 ** level
+
+    pred = pred.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    gt = gt.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    pred_cnt = pred.sum(dim=(3,5))
+    gt_cnt   = gt.sum(dim=(3,5))
+
+    loss = ((pred_cnt - gt_cnt) ** 2).mean()
+
+    return loss
+
+def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+    global ssim_loss, mse_loss
+    # MSE (count + pixel)
+    mse = mse_loss(pred, target)
+    #pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
+
+    # SSIM loss
+    ssim_loss_val = 1 - ssim_loss(pred, target)
+
+    # Grid loss
+    grid_loss = regional_loss(pred, target)
+
+    #total = mse + alpha * ssim_loss
+    mae = abs(pred.sum() - target.sum())
+    total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
+    return total, mse, mae, ssim_loss_val, grid_loss
 
 def main():
     global args, best_predict
     best_predict = 1e6
 
     args = parser.parse_args()
-    args.original_lr = 1e-7
-    args.lr = 1e-7
+    args.original_lr = 1e-6
+    args.lr = 1e-6
     args.batch_size    = 1
     args.momentum      = 0.95
     args.decay         = 5*1e-4
@@ -181,7 +257,7 @@ def main():
     args.epochs = 400
     args.steps         = [-1,1,100,150]
     args.scales        = [1,1,1,1]
-    args.workers = 4
+    args.workers = 1
     args.seed = time.time()
     args.print_freq = 30
 
@@ -197,23 +273,39 @@ def main():
     model = CrowdModel().to(device)
 
     # Criterion and optimizer
-    criterion = nn.MSELoss(size_average=False).to(device)
+    global ssim_loss, mse_loss
+    ssim_loss = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+    mse_loss = nn.MSELoss().to(device)
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.decay)
     
+    if args.pre:
+        if os.path.isfile(args.pre):
+            print("=> loading checkpoint '{}'".format(args.pre))
+            checkpoint = torch.load(args.pre)
+            args.start_epoch = checkpoint['epoch']
+            best_prec1 = checkpoint['best_prec1']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.pre, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.pre))
+
     # Loading epoch and train
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
 
-        train(train_list, model, criterion, optimizer, epoch)
-        current_predict = validate(val_list, model, criterion)
+        train(train_list, model, optimizer, epoch)
+        current_predict = validate(val_list, model)
 
         is_best = current_predict < best_predict
         best_predict = min(current_predict, best_predict)
 
         print(' * best MAE {mae:.3f} '
               .format(mae=best_predict))
+        
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.pre,
