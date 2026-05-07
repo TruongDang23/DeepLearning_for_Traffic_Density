@@ -14,6 +14,7 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 import torch.nn.functional as F
 from pytorch_msssim import ssim, ms_ssim
+from torchmetrics import StructuralSimilarityIndexMeasure
 
 import dataset
 from utils import save_checkpoint
@@ -97,7 +98,8 @@ def train(train_list, model, optimizer, epoch):
     losses = AverageMeter()
     mse_meter = AverageMeter()
     mae_meter = AverageMeter()
-    psnr_meter = AverageMeter()
+    ssim_meter = AverageMeter()
+    grid_meter = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
     
@@ -130,12 +132,13 @@ def train(train_list, model, optimizer, epoch):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
         
-        loss, mse, mae, psnr = density_loss(output, target, alpha=0.001)
+        loss, mse, mae, ssim_l, grid_loss = density_loss(output, target, alpha=0.001)
         
         losses.update(loss.item(), img.size(0))
         mse_meter.update(mse.item(), img.size(0))
         mae_meter.update(mae.item(), img.size(0))
-        psnr_meter.update(psnr.item(), img.size(0))
+        ssim_meter.update(ssim_l.item(), img.size(0))
+        grid_meter.update(grid_loss.item(), img.size(0))
 
         optimizer.zero_grad()
         loss.backward()
@@ -151,7 +154,8 @@ def train(train_list, model, optimizer, epoch):
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
                   'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
-                  'PSNR {psnr.val:.4f} ({psnr.avg:.4f})\t'
+                  'SSIM_L {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
+                  'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
                   .format(
                    epoch, i, len(train_loader), 
                    #batch_time=batch_time,
@@ -159,7 +163,8 @@ def train(train_list, model, optimizer, epoch):
                    loss=losses, 
                    mse=mse_meter, 
                    mae=mae_meter, 
-                   psnr=psnr_meter))
+                   ssim_l=ssim_meter,
+                   grid_loss = grid_meter))
     
 def validate(val_list, model):
     print ('Begin test')
@@ -195,23 +200,48 @@ def psnr(pred, target, max_val=1.0):
     mse = F.mse_loss(pred, target) + 1e-8
     return 10 * torch.log10(max_val**2 / mse)
 
-def density_loss(pred, target, alpha=0.001, use_ms=True, max_val=1.0):
+def regional_loss(pred, gt, level=1):
+
+    B, C, H, W = pred.shape
+    gt = gt.type(torch.FloatTensor).unsqueeze(0).to(device)
+
+    grid = 2 ** level
+
+    pred = pred.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    gt = gt.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    pred_cnt = pred.sum(dim=(3,5))
+    gt_cnt   = gt.sum(dim=(3,5))
+
+    loss = ((pred_cnt - gt_cnt) ** 2).mean()
+
+    return loss
+
+def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+    global ssim_loss, mse_loss
     # MSE (count + pixel)
-    mse = F.mse_loss(pred, target)
-    pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
+    mse = mse_loss(pred, target)
+    #pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
 
-    # SSIM or MS-SSIM
-    # if use_ms: #Recommended
-    #     ssim_val = ms_ssim(pred, target, data_range=1.0)
-    # else:
-    #     ssim_val = ssim(pred, target, data_range=1.0)
+    # SSIM loss
+    ssim_loss_val = 1 - ssim_loss(pred, target)
 
-    # ssim_loss = 1 - ssim_val
+    # Grid loss
+    grid_loss = regional_loss(pred, target)
 
     #total = mse + alpha * ssim_loss
     mae = abs(pred.sum() - target.sum())
-    total = mse + alpha * abs(pred.sum() - target.sum())
-    return total, mse, mae, pnsr
+    total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
+    return total, mse, mae, ssim_loss_val, grid_loss
 
 def main():
     global args, best_predict
@@ -243,6 +273,9 @@ def main():
     model = CrowdModel().to(device)
 
     # Criterion and optimizer
+    global ssim_loss, mse_loss
+    ssim_loss = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+    mse_loss = nn.MSELoss().to(device)
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.decay)
