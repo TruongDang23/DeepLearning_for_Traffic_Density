@@ -13,6 +13,7 @@ from matplotlib import cm as CM
 from tqdm import tqdm
 from pytorch_msssim import ssim, ms_ssim
 import torch.nn.functional as F
+from torchmetrics import StructuralSimilarityIndexMeasure
 
 import torch
 import torch.nn as nn
@@ -32,7 +33,10 @@ from build_model import CrowdModel
 #CHECKPOINT = "may05checkpoint.pth.tar" 
 #CHECKPOINT = "may_07checkpoint.pth.tar"
 #CHECKPOINT = "may_07_sizeDivBy8model_best.pth.tar"
-CHECKPOINT = "may_07_sizeDivBy8checkpoint.pth.tar"
+#CHECKPOINT = "may_07_sizeDivBy8checkpoint.pth.tar"
+#CHECKPOINT = "may_07_sizeDivBy8_scaleDen100model_best.pth.tar"
+#CHECKPOINT = "may_07_sizeDivBy8_ssim_gridcheckpoint.pth.tar"
+CHECKPOINT = "may_07_sizeDivBy8_ssim_gridmodel_best.pth.tar"
 VIZ = True
 BATCH_SIZE = 1
 SUBSET = 100
@@ -50,6 +54,10 @@ density_map_set = "density_gt"
 # Get device
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = 'cpu'
+
+#Loss MSE
+mse_loss = nn.MSELoss().to(device)
+ssim_loss = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
 
 # Measuerment
 class AverageMeter(object):
@@ -91,10 +99,56 @@ def psnr(pred, target, max_val=1.0):
     mse = F.mse_loss(pred, target) + 1e-8
     return 10 * torch.log10(max_val**2 / mse)
 
+def regional_loss(pred, gt, level=1):
+
+    B, C, H, W = pred.shape
+    gt = gt.type(torch.FloatTensor).unsqueeze(0).to(device)
+
+    grid = 2 ** level
+
+    pred = pred.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    gt = gt.view(
+        B, C,
+        grid, H // grid,
+        grid, W // grid
+    )
+
+    pred_cnt = pred.sum(dim=(3,5))
+    gt_cnt   = gt.sum(dim=(3,5))
+
+    loss = ((pred_cnt - gt_cnt) ** 2).mean()
+
+    return loss
+
+def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+    global ssim_loss, mse_loss
+    # MSE (count + pixel)
+    mse = mse_loss(pred, target)
+    #pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
+
+    # SSIM loss
+    ssim_loss_val = 1 - ssim_loss(pred, target)
+
+    # Grid loss
+    grid_loss = regional_loss(pred, target)
+
+    #total = mse + alpha * ssim_loss
+    mae = abs(pred.sum() - target.sum())
+    total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
+    return total, mse, mae, ssim_loss_val, grid_loss
+
 def validate(val_list, model):
     print ('Begin test')
-    #ssim_meter = AverageMeter()
-    psnr_meter = AverageMeter()
+    losses = AverageMeter()
+    mse_meter = AverageMeter()
+    mae_meter = AverageMeter()
+    ssim_meter = AverageMeter()
+    grid_meter = AverageMeter()
 
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
@@ -114,20 +168,28 @@ def validate(val_list, model):
         img = Variable(img)
         output = model(img)
 
-        predict_num = output.data.sum()
-        target_num = target.sum()
-
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
 
+        loss, mse, mae, ssim_l, grid_loss = density_loss(output, target, alpha=0.001)
+
+        losses.update(loss.item(), img.size(0))
+        mse_meter.update(mse.item(), img.size(0))
+        mae_meter.update(mae.item(), img.size(0))
+        ssim_meter.update(ssim_l.item(), img.size(0))
+        grid_meter.update(grid_loss.item(), img.size(0))
+
+        predict_num = output.data.sum()
+        target_num = target.sum()
+
         # MAE
-        mae += abs(output.data.sum()-target.sum())
+        # mae += abs(output.data.sum()-target.sum())
 
         # # SSIM + PSNR
         # ssim_val = ms_ssim(output, target, data_range=1.0)
         # ssim_meter.update(ssim_val.item(), img.size(0))
-        psnr_val = psnr(output, target)
-        psnr_meter.update(psnr_val.item(), img.size(0))
+        # psnr_val = psnr(output, target)
+        # psnr_meter.update(psnr_val.item(), img.size(0))
         
         if VIZ is True:
             ori_img = Image.open(val_list[i])
@@ -135,21 +197,6 @@ def validate(val_list, model):
             target_density = target.detach().cpu().numpy().squeeze(0).squeeze(0)
             output_density = cv2.resize(output_density, (640, 480), interpolation=cv2.INTER_CUBIC)
             target_density = cv2.resize(target_density, (640, 480), interpolation=cv2.INTER_CUBIC)
-            # Normalize density
-            # output_density = output_density * 1000
-            # print(output_density.max())
-            # print(output_density.min())
-            # print(output_density.shape)
-            # print(f"{output_density}:.2f")
-            # print("===============================================")
-            # print(target_density.max())
-            # print(target_density.min())
-            # print(target_density.shape)
-            # print(target_density)
-            # print()
-            # print(type(output_density))
-            # print(type(target_density))
-
 
             # Print test image
             plt.figure(figsize=(30, 10))
@@ -172,11 +219,6 @@ def validate(val_list, model):
             plt.title("Overlay Pred vs Img")
             plt.axis('off')
 
-            # Save
-            # img_name = os.path.basename(val_list[i])
-            # plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_overlay.jpg'), bbox_inches='tight', pad_inches=0)
-            # plt.close()
-
             # Plot density only
             plt.subplot(1, 3, 3)
             plt.imshow(output_density, cmap=CM.jet) 
@@ -185,25 +227,22 @@ def validate(val_list, model):
             plt.title("Predict density only")
             plt.axis('off')
 
-            # plt.show()
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
-
             # Save
             img_name = os.path.basename(val_list[i])
             plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_output.jpg'), bbox_inches='tight', pad_inches=0)
-            plt.close()
+            plt.close()  
 
-            # import sys
-            # sys.exit(1)
-
-    mae = mae/len(test_loader)    
-
-    print(' * MAE {mae:.3f} | \
-            PSNR {psnr.avg:.4f}'
-            .format(mae=mae, psnr=psnr_meter))
-
-    return mae 
+    print('Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+            'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
+            'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
+            'SSIM_L {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
+            'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
+            .format(
+            loss=losses, 
+            mse=mse_meter, 
+            mae=mae_meter, 
+            ssim_l=ssim_meter,
+            grid_loss = grid_meter))
 
 # Build model
 model = CrowdModel().to(device)
@@ -220,5 +259,5 @@ val_list, val_count = get_image_set(test_set_path)
 print(f">>> Validation set: {val_count} images found.")
 
 # Validate model
-mae = validate(val_list, model)
+validate(val_list, model)
 
