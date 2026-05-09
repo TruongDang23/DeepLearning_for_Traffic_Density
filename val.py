@@ -27,16 +27,7 @@ from utils import save_checkpoint
 from build_model import CrowdModel
 
 # Global variables
-#CHECKPOINT = 'checkpoints/may_04_dl_density_best_model.pth.tar'
-#CHECKPOINT = "may03model_best.pth.tar"
-#CHECKPOINT = "backup_may_04/may03checkpoint.pth.tar"
-#CHECKPOINT = "may05checkpoint.pth.tar" 
-#CHECKPOINT = "may_07checkpoint.pth.tar"
-#CHECKPOINT = "may_07_sizeDivBy8model_best.pth.tar"
-#CHECKPOINT = "may_07_sizeDivBy8checkpoint.pth.tar"
-#CHECKPOINT = "may_07_sizeDivBy8_scaleDen100model_best.pth.tar"
-#CHECKPOINT = "may_07_sizeDivBy8_ssim_gridcheckpoint.pth.tar"
-CHECKPOINT = "may_07_sizeDivBy8_ssim_gridmodel_best.pth.tar"
+CHECKPOINT = "TrafficDensity_best.pth.tar"
 VIZ = True
 BATCH_SIZE = 1
 SUBSET = 100
@@ -45,15 +36,13 @@ if VIZ is True:
     output_folder = f"output/output_viz_{timestamp}"
     os.makedirs(output_folder, exist_ok=True)
 
-#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
 dataset_path = "/mnt/d/00_master_of_science/linux_workspace/common/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
 
 # Get device
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = 'cpu'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #Loss MSE
 mse_loss = nn.MSELoss().to(device)

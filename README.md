@@ -1,13 +1,5 @@
-Github SWIN Transformer: https://github.com/microsoft/Swin-Transformer
-
-Github ConvNeXt: https://github.com/facebookresearch/ConvNeXt
-
-Config hyper-parameters ConvNeXt với C là channels ở các stage, B là stage ratio number:
-*   ConvNeXt-T: C = (96, 192, 384, 768), B = (3, 3, 9, 3) 
-*   ConvNeXt-S: C = (96, 192, 384, 768), B = (3, 3, 27, 3) 
-*   ConvNeXt-B: C = (128, 256, 512, 1024), B = (3, 3, 27, 3)
-*   ConvNeXt-L: C = (192, 384, 768, 1536), B = (3, 3, 27, 3) 
-*   ConvNeXt-XL: C = (256, 512, 1024, 2048), B = (3, 3, 27, 3)
+# Architecture
+![CrowdModel](architecture.png)
 
 # Environment
 - Python version: 3.10.20
@@ -41,5 +33,6 @@ python data_preprocess.py
 ## 3. Validation
 - Open the script `val.py` and change path to your TRANCOS dataset by updating `dataset_path` variable.
 - Set the model checkpoint to `CHECKPOINT` macro.
+  The best model can be downloaded from: [Google Drive](https://drive.google.com/file/d/1Az5CE0ZuFmWFTqOPWX8_IdkZSqI-tdT0/view?usp=sharing)
 - If you want to output the density overlay image, set `VIZ=True` inside `val.py`.
 - Using command: `python val.py`
