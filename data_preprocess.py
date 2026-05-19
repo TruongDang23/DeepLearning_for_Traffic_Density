@@ -15,10 +15,11 @@ from scipy.ndimage.filters import gaussian_filter
 # - results/
 # - code/
 # - image_sets/
-dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
-density_map_set = "density_gt"
+#density_map_set = "density_gt"
+density_map_set = "density_gt_sigma10"
 
 # Get path sets
 test_set_path = os.path.join(dataset_path, test_set)
@@ -57,7 +58,7 @@ def adaptive_sigma(points):
     return sigma
 
 # Gauusian filter density map generation
-def gaussian_filter_density(gt):
+def adaptive_gaussian_filter_density(gt, sigma=10):
     density = np.zeros(gt.shape, dtype=np.float32)
     gt_count = np.count_nonzero(gt)
     if gt_count == 0:
@@ -73,12 +74,15 @@ def gaussian_filter_density(gt):
     for i, pt in enumerate(pts):
         pt2d = np.zeros(gt.shape, dtype=np.float32)
         pt2d[pt[1],pt[0]] = 1.
-        if gt_count > 1:
-            sigma = (distances[i][1]+distances[i][2]+distances[i][3])*0.08
-        else:
-            sigma = np.average(np.array(gt.shape))/2./2. #case: 1 point
+        # if gt_count > 1:
+        #     sigma = (distances[i][1]+distances[i][2]+distances[i][3])*0.08
+        # else:
+        #     sigma = np.average(np.array(gt.shape))/2./2. #case: 1 point
+        
         density += gaussian_filter(pt2d, sigma, mode='constant')
     return density
+
+
 
 os.makedirs(os.path.join(dataset_path, density_map_set), exist_ok=True)
 print(">>> Generating density maps and saving to .h5 files...")
@@ -95,7 +99,7 @@ for i in tqdm(range(len(img_paths))):
             if gt_point_y < img.shape[0] and gt_point_x < img.shape[1]:
                 k[gt_point_y, gt_point_x] = 1
     # Generate density map
-    k = gaussian_filter_density(k)
+    k = adaptive_gaussian_filter_density(k, sigma=10)
 
     # Save density map as .h5 file
     with h5py.File(img_path.replace('.jpg','.h5').replace('images', density_map_set), 'w') as hf:

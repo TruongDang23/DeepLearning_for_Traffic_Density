@@ -23,7 +23,7 @@ from build_model import CrowdModel
 
 # Global variables
 #dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
-dataset_path = "/mnt/d/00_master_of_science/linux_workspace/common/datasets/TRANCOS_v3"
+dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -222,7 +222,8 @@ def regional_loss(pred, gt, level=1):
     pred_cnt = pred.sum(dim=(3,5))
     gt_cnt   = gt.sum(dim=(3,5))
 
-    loss = ((pred_cnt - gt_cnt) ** 2).mean()
+    #loss_old = ((pred_cnt - gt_cnt) ** 2).mean()
+    loss = abs((pred_cnt - gt_cnt)).sum()
 
     return loss
 
@@ -236,11 +237,13 @@ def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
     ssim_loss_val = 1 - ssim_loss(pred, target)
 
     # Grid loss
-    grid_loss = regional_loss(pred, target)
+    grid_loss = regional_loss(pred, target, level=2)
 
     #total = mse + alpha * ssim_loss
     mae = abs(pred.sum() - target.sum())
-    total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
+    #total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
+
+    total = grid_loss
     return total, mse, mae, ssim_loss_val, grid_loss
 
 def main():

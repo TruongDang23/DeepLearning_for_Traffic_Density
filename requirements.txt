@@ -5,6 +5,6 @@ scipy==1.15.3
 numpy==1.26.4
 opencv-python==4.8.1.78
 h5py==3.16.0
-torchsummary=1.5.1
+torchsummary==1.5.1
 torchinfo==1.8.0
 pytorch_msssim==1.0.0
