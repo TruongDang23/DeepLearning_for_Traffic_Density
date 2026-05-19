@@ -11,7 +11,7 @@ import datetime
 import PIL.Image as Image
 from matplotlib import cm as CM
 from tqdm import tqdm
-from pytorch_msssim import ssim, ms_ssim
+#from pytorch_msssim import ssim, ms_ssim
 import torch.nn.functional as F
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 
@@ -37,7 +37,8 @@ if VIZ is True:
     output_folder = f"output/output_viz_{timestamp}"
     os.makedirs(output_folder, exist_ok=True)
 
-dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
+dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+#dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -117,30 +118,25 @@ def regional_loss(pred, gt, level=1):
 
     return loss
 
-def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+def density_loss(pred, target):
     global ssim_loss, mse_loss
-    # MSE (count + pixel)
-    mse = mse_loss(pred, target)
-    #pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
-
-    # SSIM loss
-    ssim_loss_val = 1 - ssim_loss(pred, target)
+    B = pred.shape[0]
+    mse_loss = ((pred.sum() - target.sum()) ** 2) / (2*B)
+    mae = (pred.sum() - target.sum()).abs() / B
+    mse = ((pred.sum() - target.sum()) ** 2) / B
 
     # Grid loss
     grid_loss = regional_loss(pred, target, level=2)
 
-    mae = abs(pred.sum() - target.sum())
-    #total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
-
-    total = grid_loss
-    return total, mse, mae, ssim_loss_val, grid_loss
+    total = mse_loss
+    return total, mse_loss, mse, mae, grid_loss
 
 def validate(val_list, model):
     print ('Begin test')
     losses = AverageMeter()
     mse_meter = AverageMeter()
     mae_meter = AverageMeter()
-    ssim_meter = AverageMeter()
+    mse_loss_meter = AverageMeter()
     grid_meter = AverageMeter()
 
     test_loader = torch.utils.data.DataLoader(
@@ -164,25 +160,16 @@ def validate(val_list, model):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
 
-        loss, mse, mae, ssim_l, grid_loss = density_loss(output, target, alpha=0.001)
+        loss, mse_loss, mse, mae, grid_loss = density_loss(output, target)
 
         losses.update(loss.item(), img.size(0))
         mse_meter.update(mse.item(), img.size(0))
         mae_meter.update(mae.item(), img.size(0))
-        ssim_meter.update(ssim_l.item(), img.size(0))
+        mse_loss_meter.update(mse_loss.item(), img.size(0))
         grid_meter.update(grid_loss.item(), img.size(0))
 
         predict_num = output.data.sum()
         target_num = target.sum()
-
-        # MAE
-        # mae += abs(output.data.sum()-target.sum())
-
-        # # SSIM + PSNR
-        # ssim_val = ms_ssim(output, target, data_range=1.0)
-        # ssim_meter.update(ssim_val.item(), img.size(0))
-        # psnr_val = psnr(output, target)
-        # psnr_meter.update(psnr_val.item(), img.size(0))
         
         if VIZ is True:
             ori_img = Image.open(val_list[i])
@@ -225,16 +212,16 @@ def validate(val_list, model):
             plt.savefig(f"{output_folder}/{img_name}".replace('.jpg', '_output.jpg'), bbox_inches='tight', pad_inches=0)
             plt.close()  
 
-    print('Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+    print('LOSS {loss.val:.4f} ({loss.avg:.4f})\t'
+            'MSE_LOSS {mse_loss.val:.4f} ({mse_loss.avg:.4f})\t'
             'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
             'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
-            'SSIM_L {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
             'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
             .format(
             loss=losses, 
             mse=mse_meter, 
             mae=mae_meter, 
-            ssim_l=ssim_meter,
+            mse_loss=mse_loss_meter,
             grid_loss = grid_meter))
 
 # Build model

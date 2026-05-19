@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torchvision import datasets, transforms
 import torch.nn.functional as F
-from pytorch_msssim import ssim, ms_ssim
+#from pytorch_msssim import ssim, ms_ssim
 from torchmetrics import StructuralSimilarityIndexMeasure
 
 import dataset
@@ -22,8 +22,8 @@ from build_model import CrowdModel
 
 
 # Global variables
-#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
-dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
+dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+#dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -96,9 +96,9 @@ def adjust_learning_rate(optimizer, epoch):
 
 def train(train_list, model, optimizer, epoch):
     losses = AverageMeter()
+    mse_loss_meter = AverageMeter()
     mse_meter = AverageMeter()
     mae_meter = AverageMeter()
-    ssim_meter = AverageMeter()
     grid_meter = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -132,12 +132,12 @@ def train(train_list, model, optimizer, epoch):
         target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
         target = Variable(target)
         
-        loss, mse, mae, ssim_l, grid_loss = density_loss(output, target, alpha=0.001)
+        loss, mse_loss, mse, mae, grid_loss = density_loss(output, target)
         
         losses.update(loss.item(), img.size(0))
         mse_meter.update(mse.item(), img.size(0))
         mae_meter.update(mae.item(), img.size(0))
-        ssim_meter.update(ssim_l.item(), img.size(0))
+        mse_loss_meter.update(mse_loss.item(), img.size(0))
         grid_meter.update(grid_loss.item(), img.size(0))
 
         optimizer.zero_grad()
@@ -151,10 +151,10 @@ def train(train_list, model, optimizer, epoch):
             print('Epoch: [{0}][{1}/{2}]\t'
                   #'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   #'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'LOSS {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'MSE_LOSS {mse_loss.val:.4f} ({mse_loss.avg:.4f})\t'
                   'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
                   'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
-                  'SSIM_L {ssim_l.val:.4f} ({ssim_l.avg:.4f})\t'
                   'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
                   .format(
                    epoch, i, len(train_loader), 
@@ -163,7 +163,7 @@ def train(train_list, model, optimizer, epoch):
                    loss=losses, 
                    mse=mse_meter, 
                    mae=mae_meter, 
-                   ssim_l=ssim_meter,
+                   mse_loss=mse_loss_meter,
                    grid_loss = grid_meter))
     
 def validate(val_list, model):
@@ -179,26 +179,50 @@ def validate(val_list, model):
     
     model.eval()
     
-    mae = 0
+    loss_val_avg = 0
+    mse_loss_val_avg = 0
+    mse_val_avg = 0
+    mae_val_avg = 0
+    gird_loss_val_avg = 0
     
     for i, (img, target) in enumerate(tqdm(test_loader)):
         img = img.to(device)
         img = Variable(img)
         output = model(img)
+
+        target = target.type(torch.FloatTensor).unsqueeze(0).to(device)
+        target = Variable(target)
         
-        # MAE
-        mae += abs(output.data.sum()-target.sum().type(torch.FloatTensor).to(device))
+        loss, mse_loss, mse, mae, grid_loss = density_loss(output, target)
+        
+        loss_val_avg += loss
+        mse_loss_val_avg += mse_loss
+        mse_val_avg += mse
+        mae_val_avg += mae
+        gird_loss_val_avg += grid_loss
+        
+    loss_val_avg = loss_val_avg/len(test_loader)
+    mse_loss_val_avg = mse_loss_val_avg/len(test_loader)
+    mse_val_avg = mse_val_avg/len(test_loader)
+    mae_val_avg = mae_val_avg/len(test_loader)
+    gird_loss_val_avg = gird_loss_val_avg/len(test_loader)
 
-    mae = mae/len(test_loader)
+    print(' * LOSS {loss_val_avg:.3f} \t'
+          ' MSE_LOSS {mse_loss_val_avg:.3f} \t'
+          ' MSE {mse_val_avg:.3f} \t'
+          ' MAE {mae_val_avg:.3f} \t'
+          ' GRID_LOSS {gird_loss_val_avg:.3f} \t'
+              .format(loss_val_avg=loss_val_avg, 
+                      mse_loss_val_avg=mse_loss_val_avg,
+                      mse_val_avg=mse_val_avg,
+                      mae_val_avg=mae_val_avg,
+                      gird_loss_val_avg=gird_loss_val_avg))
 
-    print(' * MAE {mae:.3f}'
-              .format(mae=mae))
+    return loss_val_avg, mse_loss_val_avg, mse_val_avg, mae_val_avg, gird_loss_val_avg
 
-    return mae 
-
-def psnr(pred, target, max_val=1.0):
-    mse = F.mse_loss(pred, target) + 1e-8
-    return 10 * torch.log10(max_val**2 / mse)
+# def psnr(pred, target, max_val=1.0):
+#     mse = F.mse_loss(pred, target) + 1e-8
+#     return 10 * torch.log10(max_val**2 / mse)
 
 def regional_loss(pred, gt, level=1):
 
@@ -222,29 +246,22 @@ def regional_loss(pred, gt, level=1):
     pred_cnt = pred.sum(dim=(3,5))
     gt_cnt   = gt.sum(dim=(3,5))
 
-    #loss_old = ((pred_cnt - gt_cnt) ** 2).mean()
     loss = abs((pred_cnt - gt_cnt)).sum()
 
     return loss
 
-def density_loss(pred, target, alpha=0.1, use_ms=True, max_val=1.0):
+def density_loss(pred, target):
     global ssim_loss, mse_loss
-    # MSE (count + pixel)
-    mse = mse_loss(pred, target)
-    #pnsr = 10 * torch.log10(max_val**2 / (mse + 1e-8))
-
-    # SSIM loss
-    ssim_loss_val = 1 - ssim_loss(pred, target)
+    B = pred.shape[0]
+    mse_loss = ((pred.sum() - target.sum()) ** 2) / (2*B)
+    mae = (pred.sum() - target.sum()).abs() / B
+    mse = ((pred.sum() - target.sum()) ** 2) / B
 
     # Grid loss
     grid_loss = regional_loss(pred, target, level=2)
 
-    #total = mse + alpha * ssim_loss
-    mae = abs(pred.sum() - target.sum())
-    #total = mse + alpha * ssim_loss_val + 0.05 * grid_loss
-
-    total = grid_loss
-    return total, mse, mae, ssim_loss_val, grid_loss
+    total = mse_loss
+    return total, mse_loss, mse, mae, grid_loss
 
 def main():
     global args, best_predict
@@ -257,7 +274,7 @@ def main():
     args.momentum      = 0.95
     args.decay         = 5*1e-4
     args.start_epoch   = 0
-    args.epochs = 400
+    args.epochs = 200
     args.steps         = [-1,1,100,150]
     args.scales        = [1,1,1,1]
     args.workers = 1

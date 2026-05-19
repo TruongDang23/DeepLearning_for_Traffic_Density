@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchsummary import summary
 
+from model.backbone_vgg import Vgg16
 from model.backbone import ConvNeXtFrontend
 from model.dilated_block import DilatedBranch
 from model.swin_block import BasicLayer as SwinLayer
@@ -11,10 +12,10 @@ from model.swin_block import BasicLayer as SwinLayer
 # =========================
 # SwinLayer Configure
 # =========================
-dim = 192 # ConvNext output dimension
+dim = 512 # ConvNext output dimension
 input_resolution = (60, 80) # ConvNext output resolution
 depth = 2 # Number of swin blocks in each layer
-num_heads = 3 # Number of attention heads
+num_heads = 4 # Number of attention heads
 window_size = 5 # Window size
 mlp_ratio=4. # MLP hidden dimension ratio to embedding dimension
 qkv_bias=True
@@ -73,14 +74,19 @@ class Decoder(nn.Module):
 class CrowdModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = ConvNeXtFrontend() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 192
-        self.conv_branch = DilatedBranch() # Input H: 60, W: 80, C: 192; Output H: 60, W: 80, C: 48
-        self.swin_branch = swin_block # Input H: 60, W: 80, C: 192; Output H: 60, W: 80, C: 192
+        #self.backbone = ConvNeXtFrontend() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 192
+        self.backbone = Vgg16() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 512
+        self.conv_branch = DilatedBranch(dim=512) # Input H: 60, W: 80, C: 512; Output H: 60, W: 80, C: 128
+        self.swin_branch = swin_block # Input H: 60, W: 80, C: 512; Output H: 60, W: 80, C: 512
 
         #self.fuse = nn.Conv2d(240, 192, 1) #in_C: 240, out_C: 192
         #self.decoder = Decoder()
         self.head = nn.Sequential(
-                        nn.Conv2d(240, 64, 3, padding=1),
+                        nn.Conv2d(640, 512, 3, padding=1),
+                        nn.ReLU(),
+                        nn.Conv2d(512, 256, 3, padding=1),
+                        nn.ReLU(),
+                        nn.Conv2d(256, 64, 3, padding=1),
                         nn.ReLU(),
                         nn.Conv2d(64, 1, 1)
                     )
@@ -89,12 +95,11 @@ class CrowdModel(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         # the input x should be resize to 480x640 before feeding into the model.
-        feat = self.backbone(x) # feat shape: [B, 192, 60, 80]
-
+        feat = self.backbone(x) # feat shape: [B, 512, 60, 80]
         conv_out = self.conv_branch(feat)
 
-        feat_swin = feat.view(feat.size(0), feat.size(1), -1) # [B, 192, 60*80]
-        feat_swin = torch.permute(feat_swin, (0, 2, 1)).contiguous() # [B, 60*80, 192]
+        feat_swin = feat.view(feat.size(0), feat.size(1), -1) # [B, 512, 60*80]
+        feat_swin = torch.permute(feat_swin, (0, 2, 1)).contiguous() # [B, 60*80, 512]
         swin_out = self.swin_branch(feat_swin)
         swin_out = torch.permute(swin_out, (0, 2, 1)).contiguous() # [B, 192, 60*80]
         swin_out = swin_out.view(swin_out.size(0), swin_out.size(1), H // 8, W // 8)
