@@ -28,7 +28,7 @@ from build_model import CrowdModel
 
 # Global variables
 #CHECKPOINT = "may17_onlyGrid_lv2model_best.pth.tar"
-CHECKPOINT = "may17_onlyGrid_lv2checkpoint.pth.tar"
+CHECKPOINT = "may20_vgg_swinT_msecheckpoint.pth.tar"
 VIZ = True
 BATCH_SIZE = 1
 SUBSET = 100
@@ -37,8 +37,8 @@ if VIZ is True:
     output_folder = f"output/output_viz_{timestamp}"
     os.makedirs(output_folder, exist_ok=True)
 
-dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
-#dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
+#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"

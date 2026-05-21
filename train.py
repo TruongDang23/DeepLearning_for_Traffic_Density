@@ -22,8 +22,8 @@ from build_model import CrowdModel
 
 
 # Global variables
-dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
-#dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
+#dataset_path = "/mnt/d/common/datasets/TRANCOS_v3"
+dataset_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3"
 test_set = "image_sets/test.txt"
 train_val_set = "image_sets/trainval.txt"
 density_map_set = "density_gt"
@@ -168,6 +168,12 @@ def train(train_list, model, optimizer, epoch):
     
 def validate(val_list, model):
     print ('Begin test')
+    losses = AverageMeter()
+    mse_loss_meter = AverageMeter()
+    mse_meter = AverageMeter()
+    mae_meter = AverageMeter()
+    grid_meter = AverageMeter()
+    
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
                    shuffle=False,
@@ -179,12 +185,6 @@ def validate(val_list, model):
     
     model.eval()
     
-    loss_val_avg = 0
-    mse_loss_val_avg = 0
-    mse_val_avg = 0
-    mae_val_avg = 0
-    gird_loss_val_avg = 0
-    
     for i, (img, target) in enumerate(tqdm(test_loader)):
         img = img.to(device)
         img = Variable(img)
@@ -195,30 +195,25 @@ def validate(val_list, model):
         
         loss, mse_loss, mse, mae, grid_loss = density_loss(output, target)
         
-        loss_val_avg += loss
-        mse_loss_val_avg += mse_loss
-        mse_val_avg += mse
-        mae_val_avg += mae
-        gird_loss_val_avg += grid_loss
-        
-    loss_val_avg = loss_val_avg/len(test_loader)
-    mse_loss_val_avg = mse_loss_val_avg/len(test_loader)
-    mse_val_avg = mse_val_avg/len(test_loader)
-    mae_val_avg = mae_val_avg/len(test_loader)
-    gird_loss_val_avg = gird_loss_val_avg/len(test_loader)
+        losses.update(loss.item(), img.size(0))
+        mse_meter.update(mse.item(), img.size(0))
+        mae_meter.update(mae.item(), img.size(0))
+        mse_loss_meter.update(mse_loss.item(), img.size(0))
+        grid_meter.update(grid_loss.item(), img.size(0))
 
-    print(' * LOSS {loss_val_avg:.3f} \t'
-          ' MSE_LOSS {mse_loss_val_avg:.3f} \t'
-          ' MSE {mse_val_avg:.3f} \t'
-          ' MAE {mae_val_avg:.3f} \t'
-          ' GRID_LOSS {gird_loss_val_avg:.3f} \t'
-              .format(loss_val_avg=loss_val_avg, 
-                      mse_loss_val_avg=mse_loss_val_avg,
-                      mse_val_avg=mse_val_avg,
-                      mae_val_avg=mae_val_avg,
-                      gird_loss_val_avg=gird_loss_val_avg))
+    print('LOSS {loss.val:.4f} ({loss.avg:.4f})\t'
+        'MSE_LOSS {mse_loss.val:.4f} ({mse_loss.avg:.4f})\t'
+        'MSE {mse.val:.4f} ({mse.avg:.4f})\t'
+        'MAE {mae.val:.4f} ({mae.avg:.4f})\t'
+        'GRID_L {grid_loss.val:.4f} ({grid_loss.avg:.4f})\t'
+        .format(
+        loss=losses, 
+        mse=mse_meter, 
+        mae=mae_meter, 
+        mse_loss=mse_loss_meter,
+        grid_loss = grid_meter))
 
-    return loss_val_avg, mse_loss_val_avg, mse_val_avg, mae_val_avg, gird_loss_val_avg
+    return losses.avg, mse_loss_meter.avg, mse_meter.avg, mae_meter.avg, grid_meter.avg
 
 # def psnr(pred, target, max_val=1.0):
 #     mse = F.mse_loss(pred, target) + 1e-8
@@ -246,21 +241,27 @@ def regional_loss(pred, gt, level=1):
     pred_cnt = pred.sum(dim=(3,5))
     gt_cnt   = gt.sum(dim=(3,5))
 
-    loss = abs((pred_cnt - gt_cnt)).sum()
+    loss = ((pred_cnt - gt_cnt) ** 2).sum()
 
     return loss
 
 def density_loss(pred, target):
     global ssim_loss, mse_loss
-    B = pred.shape[0]
-    mse_loss = ((pred.sum() - target.sum()) ** 2) / (2*B)
+    B, _, H, W = pred.shape
+    #mse_loss = ((pred.sum() - target.sum()) ** 2) / (2*B)
+    #mse_loss = regional_loss(pred, target, level=2) / B
+    mse_loss = ((pred - target) ** 2).sum() / (H*W)
+
     mae = (pred.sum() - target.sum()).abs() / B
     mse = ((pred.sum() - target.sum()) ** 2) / B
 
     # Grid loss
     grid_loss = regional_loss(pred, target, level=2)
+    alpha_ratio = 0.001 #Ratio between mse element loss with GAME loss level 2
 
-    total = mse_loss
+    #Note: If the loss not good, this will cause explosion of gradient, output is all 0
+    #total = mse_loss #Warm up training with MSE only
+    total = mse_loss + alpha_ratio * grid_loss #After 2 fist epochs, add grid_loss with alpha
     return total, mse_loss, mse, mae, grid_loss
 
 def main():
@@ -268,8 +269,8 @@ def main():
     best_predict = 1e6
 
     args = parser.parse_args()
-    args.original_lr = 1e-6
-    args.lr = 1e-6
+    args.original_lr = 1e-5
+    args.lr = 1e-5
     args.batch_size    = 1
     args.momentum      = 0.95
     args.decay         = 5*1e-4
@@ -318,14 +319,20 @@ def main():
         adjust_learning_rate(optimizer, epoch)
 
         train(train_list, model, optimizer, epoch)
-        current_predict = validate(val_list, model)
+        loss_val, mse_loss_val, mse_val, mae_val, grid_loss_val = validate(val_list, model)
 
+        current_predict = mae_val
         is_best = current_predict < best_predict
         best_predict = min(current_predict, best_predict)
 
-        print(' * best MAE {mae:.3f} '
+        print("=" * 30)
+        print(' * Current MAE {mae:.3f} '
+              .format(mae=current_predict))
+        print("=" * 30)
+        print(' * Best MAE {mae:.3f} '
               .format(mae=best_predict))
-        
+        print("=" * 30)
+
         save_checkpoint({
             'epoch': epoch + 1,
             'arch': args.pre,

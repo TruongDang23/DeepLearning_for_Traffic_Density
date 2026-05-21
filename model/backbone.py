@@ -127,3 +127,4 @@ class ConvNeXtFrontend(nn.Module):
         x = self.downsample2(x)
         x = self.conv(x)
         return x  
+

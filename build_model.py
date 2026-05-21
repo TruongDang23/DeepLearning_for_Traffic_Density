@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 import torch.nn.functional as F
 from torchsummary import summary
@@ -12,7 +13,7 @@ from model.swin_block import BasicLayer as SwinLayer
 # =========================
 # SwinLayer Configure
 # =========================
-dim = 512 # ConvNext output dimension
+dim = 256 # ConvNext output dimension
 input_resolution = (60, 80) # ConvNext output resolution
 depth = 2 # Number of swin blocks in each layer
 num_heads = 4 # Number of attention heads
@@ -75,16 +76,14 @@ class CrowdModel(nn.Module):
     def __init__(self):
         super().__init__()
         #self.backbone = ConvNeXtFrontend() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 192
-        self.backbone = Vgg16() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 512
-        self.conv_branch = DilatedBranch(dim=512) # Input H: 60, W: 80, C: 512; Output H: 60, W: 80, C: 128
-        self.swin_branch = swin_block # Input H: 60, W: 80, C: 512; Output H: 60, W: 80, C: 512
+        self.backbone = Vgg16() # Input H: 480, W: 640, C: 3; Ouput H: 60, W: 80, C: 256
+        self.conv_branch = DilatedBranch(dim=256) # Input H: 60, W: 80, C: 256; Output H: 60, W: 80, C: 64
+        self.swin_branch = swin_block # Input H: 60, W: 80, C: 256; Output H: 60, W: 80, C: 256
 
         #self.fuse = nn.Conv2d(240, 192, 1) #in_C: 240, out_C: 192
         #self.decoder = Decoder()
         self.head = nn.Sequential(
-                        nn.Conv2d(640, 512, 3, padding=1),
-                        nn.ReLU(),
-                        nn.Conv2d(512, 256, 3, padding=1),
+                        nn.Conv2d(320, 256, 3, padding=1),
                         nn.ReLU(),
                         nn.Conv2d(256, 64, 3, padding=1),
                         nn.ReLU(),
@@ -95,13 +94,13 @@ class CrowdModel(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         # the input x should be resize to 480x640 before feeding into the model.
-        feat = self.backbone(x) # feat shape: [B, 512, 60, 80]
+        feat = self.backbone(x) # feat shape: [B, 256, 60, 80]
         conv_out = self.conv_branch(feat)
 
-        feat_swin = feat.view(feat.size(0), feat.size(1), -1) # [B, 512, 60*80]
-        feat_swin = torch.permute(feat_swin, (0, 2, 1)).contiguous() # [B, 60*80, 512]
+        feat_swin = feat.view(feat.size(0), feat.size(1), -1) # [B, 256, 60*80]
+        feat_swin = torch.permute(feat_swin, (0, 2, 1)).contiguous() # [B, 60*80, 256]
         swin_out = self.swin_branch(feat_swin)
-        swin_out = torch.permute(swin_out, (0, 2, 1)).contiguous() # [B, 192, 60*80]
+        swin_out = torch.permute(swin_out, (0, 2, 1)).contiguous() # [B, 256, 60*80]
         swin_out = swin_out.view(swin_out.size(0), swin_out.size(1), H // 8, W // 8)
 
         fused = torch.cat([conv_out, swin_out], dim=1)
@@ -119,21 +118,23 @@ class CrowdModel(nn.Module):
 # Test Model Summary
 # =========================
 
-# # Select device
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# # # Select device
+# device = "cpu"
 
 # # First dry test -----------------------------------
 # model = CrowdModel().to(device)
+# print(model)
 # x = torch.randn(1, 3, 480, 640)
 # density_map = model(x)
-# print(density_map.shape)
+# print(density_map.max())
+# print(density_map.min())
 
 # # Test with image -----------------------------------
 # import cv2
 # import numpy as np
 # import copy
 # # Preprocess the image
-# img_path = "/mnt/d/common/datasets/TRANCOS_v3/images/image-1-000001.jpg"
+# img_path = "/home/nghia/ws/master_project/datasets/TRANCOS_v3/images/image-1-000001.jpg"
 # img = cv2.imread(img_path)  # shape: (H, W, C), BGR, uint8
 # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 # ori_img = copy.deepcopy(img)
@@ -155,7 +156,5 @@ class CrowdModel(nn.Module):
 # # apply blue colormap
 # heatmap = cv2.applyColorMap(density_uint8, cv2.COLORMAP_JET)
 # # show
-# combined = cv2.hconcat([ori_img, heatmap])
-# cv2.imshow("density", combined)
-# cv2.waitKey(0)
-# cv2.destroyAllWindows()
+# #combined = cv2.hconcat([ori_img, heatmap])
+# cv2.imwrite("density_test.png", heatmap)
