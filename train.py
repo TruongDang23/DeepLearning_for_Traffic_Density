@@ -37,6 +37,7 @@ parser.add_argument('--pre', '-p', metavar='PRETRAINED', default=None, type=str,
                     help='path to the pretrained model')
 parser.add_argument('--task', '-t', metavar='TASK', type=str, default="may05",
                     help='task id to use.')
+parser.add_argument('--reset', '-r', action="store_true", type=bool, help='Reset Epoch if using Pretrain')
 
 # Measuerment
 class AverageMeter(object):
@@ -257,7 +258,7 @@ def density_loss(pred, target):
 
     # Grid loss
     grid_loss = regional_loss(pred, target, level=2)
-    alpha_ratio = 0.001 #Ratio between mse element loss with GAME loss level 2
+    alpha_ratio = 0.01 #Ratio between mse element loss with GAME loss level 2
 
     #Note: If the loss not good, this will cause explosion of gradient, output is all 0
     #total = mse_loss #Warm up training with MSE only
@@ -305,7 +306,10 @@ def main():
         if os.path.isfile(args.pre):
             print("=> loading checkpoint '{}'".format(args.pre))
             checkpoint = torch.load(args.pre)
-            args.start_epoch = checkpoint['epoch']
+            if args.reset:
+                args.start_epoch = 0
+            else:
+                args.start_epoch = checkpoint['epoch']
             best_prec1 = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
